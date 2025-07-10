@@ -1,15 +1,93 @@
 """
-MongoDB database configuration and setup for Mergington High School API
+Database configuration and setup for Mergington High School API
+Using in-memory storage for simplicity
 """
 
-from pymongo import MongoClient
 from argon2 import PasswordHasher
 
-# Connect to MongoDB
-client = MongoClient('mongodb://localhost:27017/')
-db = client['mergington_high']
-activities_collection = db['activities']
-teachers_collection = db['teachers']
+# In-memory storage
+activities_data = {}
+teachers_data = {}
+
+# Mock MongoDB collection interface for in-memory storage
+class MockCollection:
+    def __init__(self, data_store):
+        self.data_store = data_store
+    
+    def count_documents(self, query):
+        return len(self.data_store)
+    
+    def insert_one(self, document):
+        doc_id = document.pop('_id')
+        self.data_store[doc_id] = document
+    
+    def find_one(self, query):
+        if '_id' in query:
+            doc_id = query['_id']
+            if doc_id in self.data_store:
+                result = self.data_store[doc_id].copy()
+                result['_id'] = doc_id
+                return result
+        return None
+    
+    def find(self, query=None):
+        results = []
+        for doc_id, doc_data in self.data_store.items():
+            if query is None or self._matches_query(doc_data, query):
+                result = doc_data.copy()
+                result['_id'] = doc_id
+                results.append(result)
+        return results
+    
+    def update_one(self, query, update):
+        if '_id' in query:
+            doc_id = query['_id']
+            if doc_id in self.data_store:
+                if '$push' in update:
+                    for field, value in update['$push'].items():
+                        if field not in self.data_store[doc_id]:
+                            self.data_store[doc_id][field] = []
+                        self.data_store[doc_id][field].append(value)
+                elif '$pull' in update:
+                    for field, value in update['$pull'].items():
+                        if field in self.data_store[doc_id]:
+                            if value in self.data_store[doc_id][field]:
+                                self.data_store[doc_id][field].remove(value)
+                return type('Result', (), {'modified_count': 1})()
+        return type('Result', (), {'modified_count': 0})()
+    
+    def aggregate(self, pipeline):
+        # Simple aggregation for getting unique days
+        if len(pipeline) >= 2 and '$unwind' in pipeline[0] and '$group' in pipeline[1]:
+            days = set()
+            for doc_data in self.data_store.values():
+                if 'schedule_details' in doc_data and 'days' in doc_data['schedule_details']:
+                    for day in doc_data['schedule_details']['days']:
+                        days.add(day)
+            return [{'_id': day} for day in sorted(days)]
+        return []
+    
+    def _matches_query(self, doc_data, query):
+        for key, value in query.items():
+            if key == 'schedule_details.days' and '$in' in value:
+                if 'schedule_details' not in doc_data or 'days' not in doc_data['schedule_details']:
+                    return False
+                if not any(day in doc_data['schedule_details']['days'] for day in value['$in']):
+                    return False
+            elif key == 'schedule_details.start_time' and '$gte' in value:
+                if 'schedule_details' not in doc_data or 'start_time' not in doc_data['schedule_details']:
+                    return False
+                if doc_data['schedule_details']['start_time'] < value['$gte']:
+                    return False
+            elif key == 'schedule_details.end_time' and '$lte' in value:
+                if 'schedule_details' not in doc_data or 'end_time' not in doc_data['schedule_details']:
+                    return False
+                if doc_data['schedule_details']['end_time'] > value['$lte']:
+                    return False
+        return True
+
+activities_collection = MockCollection(activities_data)
+teachers_collection = MockCollection(teachers_data)
 
 # Methods
 def hash_password(password):
@@ -163,6 +241,17 @@ initial_activities = {
         },
         "max_participants": 16,
         "participants": ["william@mergington.edu", "jacob@mergington.edu"]
+    },
+    "Manga Maniacs": {
+        "description": "Explore the fantastic stories of the most interesting characters from Japanese Manga (graphic novels).",
+        "schedule": "Tuesdays, 7:00 PM - 8:30 PM",
+        "schedule_details": {
+            "days": ["Tuesday"],
+            "start_time": "19:00",
+            "end_time": "20:30"
+        },
+        "max_participants": 15,
+        "participants": []
     }
 }
 
